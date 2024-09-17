@@ -1,36 +1,31 @@
-//Basic Setup
+if(process.env.NODE_ENV != "production"){
+require("dotenv").config();
+}
+
 const express = require("express");
 const app = express();
 const mongoose  = require("mongoose");
-const Listing = require("./models/listing.js");
 const path = require("path");
 const methodOverride = require("method-override");
 const ejsMate = require("ejs-mate");        //Install ejs-mate npm package
 //-+ ejs-mate is a npm package that is used for boilerplate(i,e. to use similar layout in multiple pages)
-const wrapAsync = require("./utils/wrapAsync.js");
 const ExpressError = require("./utils/ExpressError.js");
-const {listingSchema} = require("./schema.js");   //Validation Schema
-const Review = require("./models/review.js");
+const session = require("express-session");
+const MongoStore = require("connect-mongo");
+const flash = require("connect-flash");
+const passport = require("passport");
+const LocalStrategy = require("passport-local");
+const User = require("./models/user.js");
 
 
-app.set("view engine","ejs");
-app.set("views",path.join(__dirname,"views"));
-app.use(express.urlencoded({extended:true}));
-app.use(methodOverride("_method"));
-app.engine("ejs",ejsMate);
-app.use(express.static(path.join(__dirname,"/public")));    //This is used to use static files as css
+const listingsRouter = require("./routes/listing.js");
+const reviewRouter = require("./routes/review.js");
+const userRouter = require("./routes/user.js");
 
-app.get("/",(req,res)=>{
-    res.send("Hi, I am root");
-})
+const dbUrl = process.env.ATLASDB_URL;
 
-app.listen(8080,()=>{
-    console.log("Server is listening to port 8080");
-})
-
-const MONGO_URL = "mongodb://127.0.0.1:27017/wanderlust";
 async function main(){
-    await mongoose.connect(MONGO_URL);
+    await mongoose.connect(dbUrl);
 }
 
 main().then(()=>{
@@ -39,126 +34,85 @@ main().then(()=>{
     console.log(err);
 });
 
-//Schema validation function
-const validateListing = (req,res,next) => {
-    let {error} = listingSchema.validate(req.body);
-        if(error){
-            let errMsg = error.details.map((el) => el.message).join(",");
-            throw new ExpressError(400, errMsg);
-        }
-        else{
-            next();
-        }
-}
+app.set("view engine","ejs");
+app.set("views",path.join(__dirname,"views"));
+app.use(express.urlencoded({extended:true}));
+app.use(methodOverride("_method"));
+app.engine("ejs",ejsMate);
+app.use(express.static(path.join(__dirname,"/public")));    //This is used to use static files as css
 
-//Index route
-app.get("/listings",wrapAsync(async (req,res)=>{
-    const allListings = await Listing.find({});
-    res.render("listings/index.ejs",{allListings});
-    })
-);
-
-//New route
-app.get ("/listings/new",(req,res)=>{
-    res.render("listings/new.ejs");
+//To store session information on atlas mongo database
+const store = MongoStore.create({
+    mongoUrl:dbUrl,
+    crypto:{
+        secret: process.env.SECRET,
+    },
+    touchAfter: 24 *3600,
 })
 
-//Show route
-// app.get("/listings/:id",wrapAsync(async (req,res)=>{
-//     let {id} = req.params;
-//     const listing = await Listing.findById(id);
-//     res.render("listings/show.ejs",{listing});
-// }));
+store.on("error",()=>{
+    console.log("ERROR IN MONGO SESSION STORE",err);
+})
 
-app.get("/listings/:id", async (req, res) => {
-    try {
-        const listing = await Listing.findById(req.params.id).populate('reviews').exec();
-        if (!listing) {
-            return res.status(404).send("Listing not found");
-        }
-        res.render("listings/show.ejs", { listing }); // Adjust the view name as necessary
-    } catch (error) {
-        console.error(error);
-        res.status(500).send("An error occurred");
+const sessionOptions = {
+    store,
+    secret: process.env.SECRET,
+    resave:false,
+    saveUninitialized: true,
+    cookie: {
+        expires: Date.now() + 7 * 24 * 60 * 60 * 1000, //Time after 1 week in milisecond
+        maxAge: 7 * 24 * 60 * 60 * 1000,
+        httpOnly: true //It is used to prevent cross scripting attack
     }
+};
+
+// app.get("/",(req,res)=>{
+//     res.send("Hi, I am root");
+// })
+
+app.use(session(sessionOptions));
+app.use(flash());
+
+app.use(passport.initialize());
+app.use(passport.session());
+passport.use(new LocalStrategy(User.authenticate()));
+
+passport.serializeUser(User.serializeUser());
+passport.deserializeUser(User.deserializeUser());
+
+//Middleware to flash message 
+app.use((req,res,next)=>{
+    res.locals.success = req.flash("success");
+    res.locals.error = req.flash("error");
+    res.locals.currUser = req.user;
+    next();
 });
 
-//Create Route
-app.post("/listings",validateListing,
-     wrapAsync( async(req,res,next)=>{
-        //let {title, description, image, price, country, location} = req.body;
-        // or 
+// app.get("/demouser", async(req,res)=>{
+//     let fakeUser = new User({
+//         email: "student@gmail.com",
+//         username: "delta-student2",
+//     });
+//     let registeredUser = await User.register(fakeUser,"Helloworld");
+//     res.send(registeredUser);
+// })
 
-        // if(!req.body.listing) {
-        //     throw new ExpressError(400,"Send valid data for listing");
-        // } 
-        //Instead of using multiple if statements for schema validation we can use joi as follow
+ app.use("/listings",listingsRouter);
+ app.use("/listings/:id/reviews",reviewRouter);
+ app.use("/",userRouter);
 
-        const newListing = new Listing(req.body.listing);
-        await newListing.save();
-        res.redirect("/listings");
-    })
-);
 
-//Edit Route
-app.get("/listings/:id/edit",wrapAsync(async (req,res)=>{
-    let {id} = req.params;
-    const listing = await Listing.findById(id);
-    res.render("listings/edit.ejs",{listing});
-}));
-
-//Update route
-app.put("/listings/:id",validateListing,
-    wrapAsync(async (req,res)=>{
-
-    let {id} = req.params;
-    await Listing.findByIdAndUpdate(id,{...req.body.listing});
-    res.redirect(`/listings/${id}`);
-}));
- 
-//Delete route
-app.delete("/listings/:id",wrapAsync( async (req,res)=>{
-    let {id} = req.params;
-    let deletedListing = await Listing.findByIdAndDelete(id);
-    console.log(deletedListing);
-    res.redirect("/listings");
-}));
-
-app.all("*",(req,res,next)=>{
+ //Middleware
+ app.all("*",(req,res,next)=>{
     next(new ExpressError(404,"Page not found"));
 });
 
-//Review
-// app.post("/listings/:id/reviews",validateListing, wrapAsync (async(req,res)=>{
-//     let listing =await Listing.findById(req.params.id);
-//      let newReview = new Review (req.body.review);
-
-//      listing.reviews.push(newReview);
-
-//      await newReview.save();
-//     await listing.save();
-
-//      res.redirect(`/listings/${listing._id}`);
-//  }));
-
- app.post("/listings/:id/reviews",validateListing, wrapAsync(async(req,res)=>{
-    let listing =await Listing.findById(req.params.id);
-     let newReview = new Review (req.body.review);
-
-     listing.reviews.push(newReview);
-
-     await newReview.save();
-    await listing.save();
-
-     res.redirect(`/listings/${id}`);
- }));
-
-
-//Middleware
 app.use((err,req,res,next)=>{
     let {statusCode = 500, message = "Something went wrong"} = err;
     res.status(statusCode).render("error.ejs",{message});
     //res.status(statusCode).send(message);
 });
 
-
+app.listen(8080,()=>{
+    console.log("Server is listening to port 8080");
+})

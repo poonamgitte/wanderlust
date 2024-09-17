@@ -1,4 +1,5 @@
 //Server Side Schema validation schema
+//Instead of using multiple if statements for schema validation we can use joi as follow
 
 const Joi = require("joi");
 
@@ -13,6 +14,7 @@ module.exports.listingSchema = Joi.object({
     }).required(),
 });
 
+//Server side Review validation schema
 module.exports.reviewSchema=Joi.object({
     review: Joi.object({
         comment:Joi.string().required(),
